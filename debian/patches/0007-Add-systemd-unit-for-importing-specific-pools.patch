@@ -23,10 +23,10 @@ Signed-off-by: Thomas Lamprecht <t.lamprecht@proxmox.com>
  create mode 100644 etc/systemd/system/zfs-import@.service.in
 
 diff --git a/etc/Makefile.am b/etc/Makefile.am
-index 58b3cf563b624c716f1a3f82b15283758a19bc0c..2e539ae4623441db09a8baa166fca4deceed7930 100644
+index a795bec160d91d49f90f46f1995c267d16e39643..4e0e8fe5883e4b26e0708107a06034fd69ec89ff 100644
 --- a/etc/Makefile.am
 +++ b/etc/Makefile.am
-@@ -55,6 +55,7 @@ dist_systemdpreset_DATA = \
+@@ -49,6 +49,7 @@ dist_systemdpreset_DATA = \
  systemdunit_DATA = \
  	%D%/systemd/system/zfs-import-cache.service \
  	%D%/systemd/system/zfs-import-scan.service \
