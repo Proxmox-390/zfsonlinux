@@ -21,10 +21,10 @@ Closes #18240
  5 files changed, 62 insertions(+), 22 deletions(-)
 
 diff --git a/cmd/zfs/zfs_main.c b/cmd/zfs/zfs_main.c
-index ce948951a028a22ba21aba87035ae4b64b443fb9..7cd9a3479d549973ff842386f760b27ab9ad5636 100644
+index 9b58286272a6c27b22ee1bb3d18376825a4da42e..799ccd07952c1c35c5cc34f6d423156c52f550a8 100644
 --- a/cmd/zfs/zfs_main.c
 +++ b/cmd/zfs/zfs_main.c
-@@ -345,10 +345,10 @@ get_usage(zfs_help_t idx)
+@@ -346,10 +346,10 @@ get_usage(zfs_help_t idx)
  	case HELP_ROLLBACK:
  		return (gettext("\trollback [-rRf] <snapshot>\n"));
  	case HELP_SEND:
@@ -37,7 +37,7 @@ index ce948951a028a22ba21aba87035ae4b64b443fb9..7cd9a3479d549973ff842386f760b27a
  		    "<filesystem|volume|snapshot>\n"
  		    "\tsend [-DnPpVvLec] [-i bookmark|snapshot] "
  		    "--redact <bookmark> <snapshot>\n"
-@@ -4784,11 +4784,12 @@ zfs_do_send(int argc, char **argv)
+@@ -4785,11 +4785,12 @@ zfs_do_send(int argc, char **argv)
  		{"holds",	no_argument,		NULL, 'h'},
  		{"saved",	no_argument,		NULL, 'S'},
  		{"exclude",	required_argument,	NULL, 'X'},
@@ -51,7 +51,7 @@ index ce948951a028a22ba21aba87035ae4b64b443fb9..7cd9a3479d549973ff842386f760b27a
  	    long_options, NULL)) != -1) {
  		switch (c) {
  		case 'X':
-@@ -4874,6 +4875,9 @@ zfs_do_send(int argc, char **argv)
+@@ -4875,6 +4876,9 @@ zfs_do_send(int argc, char **argv)
  		case 'S':
  			flags.saved = B_TRUE;
  			break;
@@ -76,7 +76,7 @@ index 14930fb90622b706d7c45991817746a61e0fdd2d..c67d5f353e99b4273728ccffde1f4db6
  
  typedef boolean_t (snapfilter_cb_t)(zfs_handle_t *, void *);
 diff --git a/lib/libzfs/libzfs_sendrecv.c b/lib/libzfs/libzfs_sendrecv.c
-index 2c38333e18a19c4750f6219d11020096581fbb1d..fb446516d81563227664e9dc039abc2fcaa7e7e0 100644
+index b7bdf63a28d0d29e852137e9189ccf739a2cdaef..69a7ea0ef980df39c73d7d5c2a456ae956eb9d26 100644
 --- a/lib/libzfs/libzfs_sendrecv.c
 +++ b/lib/libzfs/libzfs_sendrecv.c
 @@ -258,6 +258,7 @@ typedef struct send_data {
@@ -145,7 +145,7 @@ index 2c38333e18a19c4750f6219d11020096581fbb1d..fb446516d81563227664e9dc039abc2f
  
  	if ((error = send_iterate_fs(zhp, &sd)) != 0) {
  		fnvlist_free(sd.fss);
-@@ -2199,7 +2213,7 @@ send_prelim_records(zfs_handle_t *zhp, const char *from, int fd,
+@@ -2201,7 +2215,7 @@ send_prelim_records(zfs_handle_t *zhp, const char *from, int fd,
      boolean_t gather_props, boolean_t recursive, boolean_t verbose,
      boolean_t dryrun, boolean_t raw, boolean_t replicate, boolean_t skipmissing,
      boolean_t backup, boolean_t holds, boolean_t props, boolean_t doall,
@@ -154,7 +154,7 @@ index 2c38333e18a19c4750f6219d11020096581fbb1d..fb446516d81563227664e9dc039abc2f
  {
  	int err = 0;
  	char *packbuf = NULL;
-@@ -2245,7 +2259,8 @@ send_prelim_records(zfs_handle_t *zhp, const char *from, int fd,
+@@ -2247,7 +2261,8 @@ send_prelim_records(zfs_handle_t *zhp, const char *from, int fd,
  
  		if (gather_nvlist(zhp->zfs_hdl, tofs,
  		    from, tosnap, recursive, raw, doall, replicate, skipmissing,
@@ -164,7 +164,7 @@ index 2c38333e18a19c4750f6219d11020096581fbb1d..fb446516d81563227664e9dc039abc2f
  			return (zfs_error(zhp->zfs_hdl, EZFS_BADBACKUP,
  			    errbuf));
  		}
-@@ -2392,7 +2407,7 @@ zfs_send_cb_impl(zfs_handle_t *zhp, const char *fromsnap, const char *tosnap,
+@@ -2394,7 +2409,7 @@ zfs_send_cb_impl(zfs_handle_t *zhp, const char *fromsnap, const char *tosnap,
  		    flags->replicate, flags->verbosity > 0, flags->dryrun,
  		    flags->raw, flags->replicate, flags->skipmissing,
  		    flags->backup, flags->holds, flags->props, flags->doall,
@@ -173,7 +173,7 @@ index 2c38333e18a19c4750f6219d11020096581fbb1d..fb446516d81563227664e9dc039abc2f
  		zfs_close(tosnap);
  		if (err != 0)
  			goto err_out;
-@@ -2735,7 +2750,8 @@ zfs_send_one_cb_impl(zfs_handle_t *zhp, const char *from, int fd,
+@@ -2737,7 +2752,8 @@ zfs_send_one_cb_impl(zfs_handle_t *zhp, const char *from, int fd,
  		err = send_prelim_records(zhp, NULL, fd, B_TRUE, B_FALSE,
  		    flags->verbosity > 0, flags->dryrun, flags->raw,
  		    flags->replicate, B_FALSE, flags->backup, flags->holds,
@@ -183,7 +183,7 @@ index 2c38333e18a19c4750f6219d11020096581fbb1d..fb446516d81563227664e9dc039abc2f
  		if (err != 0)
  			return (err);
  	}
-@@ -3392,7 +3408,7 @@ recv_fix_encryption_hierarchy(libzfs_handle_t *hdl, const char *top_zfs,
+@@ -3394,7 +3410,7 @@ recv_fix_encryption_hierarchy(libzfs_handle_t *hdl, const char *top_zfs,
  	/* Using top_zfs, gather the nvlists for all local filesystems. */
  	if ((err = gather_nvlist(hdl, top_zfs, NULL, NULL,
  	    recursive, B_TRUE, B_FALSE, recursive, B_FALSE, B_FALSE, B_FALSE,
@@ -192,7 +192,7 @@ index 2c38333e18a19c4750f6219d11020096581fbb1d..fb446516d81563227664e9dc039abc2f
  		return (err);
  
  	/*
-@@ -3547,7 +3563,7 @@ again:
+@@ -3549,7 +3565,7 @@ again:
  
  	if ((error = gather_nvlist(hdl, tofs, fromsnap, NULL,
  	    recursive, B_TRUE, B_FALSE, recursive, B_FALSE, B_FALSE, B_FALSE,
@@ -201,7 +201,7 @@ index 2c38333e18a19c4750f6219d11020096581fbb1d..fb446516d81563227664e9dc039abc2f
  		return (error);
  
  	/*
-@@ -5138,7 +5154,7 @@ zfs_receive_one(libzfs_handle_t *hdl, int infd, const char *tosnap,
+@@ -5140,7 +5156,7 @@ zfs_receive_one(libzfs_handle_t *hdl, int infd, const char *tosnap,
  		*cp = '\0';
  		if (gather_nvlist(hdl, destsnap, NULL, NULL, B_FALSE, B_TRUE,
  		    B_FALSE, B_FALSE, B_FALSE, B_FALSE, B_FALSE, B_FALSE,

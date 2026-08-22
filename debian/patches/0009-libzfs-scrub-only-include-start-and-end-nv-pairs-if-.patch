@@ -41,10 +41,10 @@ Signed-off-by: Stoiko Ivanov <s.ivanov@proxmox.com>
  1 file changed, 5 insertions(+), 2 deletions(-)
 
 diff --git a/lib/libzfs/libzfs_pool.c b/lib/libzfs/libzfs_pool.c
-index 42a1ddcf28a62efb17f45d1a7870248bcdbb7ca3..9420c346431d7841a8edebf5e60075a6cfd1516f 100644
+index 40c46436e1e3c6f46608a2d6a5c6af42bce0ba46..e77f9425a44c0b022fd66246c959fbdcf65c3d43 100644
 --- a/lib/libzfs/libzfs_pool.c
 +++ b/lib/libzfs/libzfs_pool.c
-@@ -2797,8 +2797,11 @@ zpool_scan_range(zpool_handle_t *zhp, pool_scan_func_t func,
+@@ -2824,8 +2824,11 @@ zpool_scan_range(zpool_handle_t *zhp, pool_scan_func_t func,
  	nvlist_t *args = fnvlist_alloc();
  	fnvlist_add_uint64(args, "scan_type", (uint64_t)func);
  	fnvlist_add_uint64(args, "scan_command", (uint64_t)cmd);
