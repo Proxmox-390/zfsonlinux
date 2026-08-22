@@ -1,3 +1,47 @@
+zfs-linux (2.4.4-pve1) trixie; urgency=medium
+
+  * update ZFS to new 2.4.4 upstream release and refresh patches.
+
+  * restrict pool-configuration ioctls, among them pool import and destroy, to
+    the initial user namespace. ZFS checked CAP_SYS_ADMIN against the caller's
+    own user namespace, so a local user could pass that check by entering a
+    new one. This only matters on hosts where untrusted users have shell
+    access.
+
+  * fix a race in the dedup write path where a write that ran into an error
+    could zero a block pointer, so the affected blocks read back as zeroes
+    without a checksum error. Only pools with dedup enabled are affected.
+    Present since 2.4.0.
+
+  * fix reads that returned the old content of a block which was first
+    overwritten and then freed again shortly after. This affects block cloning
+    and direct I/O. Present since 2.4.2.
+
+  * fix two import-time multihost (MMP) checks that could wrongly report a
+    pool as held by another host, one for pools with a removed log or device,
+    one for degraded mirrors, where it also held up a HA failover. Only pools
+    with multihost enabled are affected. Present since 2.4.1.
+
+  * fix an indefinite hang when exporting a pool that still has an open zvol,
+    `zpool export` now fails with EBUSY instead.
+
+  * zed now picks up capacity changes on whole-disk vdevs, so growing the
+    underlying disk triggers autoexpand instead of requiring a manual
+    `zpool online -e`. Device-mapper vdevs, such as multipath, still need the
+    manual step.
+
+  * the pool import services no longer cancel the import when
+    systemd-udev-settle.service fails. On a host where scanning the devices
+    takes longer than that unit's timeout, the pool is now imported with the
+    devices found so far, so it can come up degraded instead of not at all.
+
+  * zfs-import@.service now also orders itself after systemd-udev-trigger and
+    systemd-modules-load, so importing a specific pool by scanning
+    /dev/disk/by-id stays correctly ordered on hosts without
+    systemd-udev-settle.service.
+
+ -- Proxmox Support Team <support@proxmox.com>  Sat, 22 Aug 2026 13:55:55 +0200
+
 zfs-linux (2.4.3-pve1) trixie; urgency=medium
 
   * update ZFS to new 2.4.3 upstream release and refresh patches.
