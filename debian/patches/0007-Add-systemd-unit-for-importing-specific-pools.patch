@@ -13,13 +13,22 @@ can contain characters which will be escaped by systemd.
 Its instances are ordered before the other two "big" import services to avoid
 races and spurious (cosmetic!) service failures.
 
+Since the import scans /dev/disk/by-id it needs udev to have created those
+symlinks first, so order after systemd-udev-trigger and systemd-modules-load
+too, the same way upstream does for its own import units. Ordering on
+systemd-udev-settle alone is not enough, that unit is deprecated and may be
+masked or missing, and an After= on a unit that is not there has no effect.
+
+multipathd ships as a .service, so ordering after a multipathd.target never
+did anything.
+
 Signed-off-by: Stoiko Ivanov <s.ivanov@proxmox.com>
 Signed-off-by: Thomas Lamprecht <t.lamprecht@proxmox.com>
 ---
  etc/Makefile.am                           |  1 +
  etc/systemd/system/50-zfs.preset          |  1 +
- etc/systemd/system/zfs-import@.service.in | 18 ++++++++++++++++++
- 3 files changed, 20 insertions(+)
+ etc/systemd/system/zfs-import@.service.in | 21 +++++++++++++++++++++
+ 3 files changed, 23 insertions(+)
  create mode 100644 etc/systemd/system/zfs-import@.service.in
 
 diff --git a/etc/Makefile.am b/etc/Makefile.am
@@ -48,17 +57,20 @@ index e4056a92cd985380aa7346f4b291e4c3f1446fee..030611419816c83bcb86fc9c23d31855
  enable zfs-share.service
 diff --git a/etc/systemd/system/zfs-import@.service.in b/etc/systemd/system/zfs-import@.service.in
 new file mode 100644
-index 0000000000000000000000000000000000000000..5bd19fb795e2b5554b3932e0b84b2668c2dcac51
+index 0000000000000000000000000000000000000000..87ac6de63982ad613dc6f6e1841a203530918927
 --- /dev/null
 +++ b/etc/systemd/system/zfs-import@.service.in
-@@ -0,0 +1,18 @@
+@@ -0,0 +1,21 @@
 +[Unit]
 +Description=Import ZFS pool %i
 +Documentation=man:zpool(8)
 +DefaultDependencies=no
++Wants=systemd-udev-settle.service
 +After=systemd-udev-settle.service
++After=systemd-udev-trigger.service
++After=systemd-modules-load.service
 +After=cryptsetup.target
-+After=multipathd.target
++After=multipathd.service
 +Before=zfs-import.target
 +Before=zfs-import-scan.service
 +Before=zfs-import-cache.service
