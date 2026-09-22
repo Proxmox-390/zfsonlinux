@@ -8,3 +8,7 @@
 0008-zpool-status-tighten-bounds-for-noalloc-stat-availab.patch
 0009-libzfs-scrub-only-include-start-and-end-nv-pairs-if-.patch
 0010-Add-no-preserve-encryption-flag.patch
+0011-Linux-7.3-bvec_iter.bi_bvec_done-is-now-bi_offset.patch
+0012-Linux-use-cpu_feature_enabled-instead-of-static_cpu_.patch
+0013-Linux-7.3-inode_operations.create-dropped-flag-arg.patch
+0014-Linux-7.3-make-host-filesystem-available-to-kernel-t.patch

@@ -1,0 +1,84 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Rob Norris <rob.norris@truenas.com>
+Date: Sun, 16 Aug 2026 09:14:34 +1000
+Subject: [PATCH] Linux 7.3: inode_operations.create dropped flag arg
+
+Sponsored-by: TrueNAS
+Reviewed-by: Brian Behlendorf <behlendorf1@llnl.gov>
+Reviewed-by: Tony Hutter <hutter2@llnl.gov>
+Co-developed-by: TheAlmightyOgreLord <beardedtechwizard@protonmail.com>
+Signed-off-by: Rob Norris <rob.norris@truenas.com>
+Closes #19082
+(cherry picked from commit 6e2fa4bc87c35086ce36a4022cfa2b4212518eab)
+[TL: 2.4 still has the older create checks in kernel-inode-create.m4,
+ so add the new variant there as last alternative; it must also define
+ HAVE_IOPS_CREATE_IDMAP, which 2.4 uses for its mnt_idmap shims]
+Signed-off-by: Thomas Lamprecht <t.lamprecht@proxmox.com>
+---
+ config/kernel-inode-create.m4   | 31 ++++++++++++++++++++++++++++++-
+ module/os/linux/zfs/zpl_inode.c |  3 +++
+ 2 files changed, 33 insertions(+), 1 deletion(-)
+
+diff --git a/config/kernel-inode-create.m4 b/config/kernel-inode-create.m4
+index 65817ca9a440cb1a215fcb56ce079a577de30585..79da0f15e75806000c856e0fafffee0820ce783a 100644
+--- a/config/kernel-inode-create.m4
++++ b/config/kernel-inode-create.m4
+@@ -36,6 +36,24 @@ AC_DEFUN([ZFS_AC_KERNEL_SRC_CREATE], [
+ 		};
+ 	],[])
+ 
++	dnl #
++	dnl # 7.3 API change
++	dnl # The bool flag arg is dropped
++	dnl #
++	ZFS_LINUX_TEST_SRC([create_mnt_idmap_no_flag], [
++		#include <linux/fs.h>
++		#include <linux/sched.h>
++
++		static int inode_create(struct mnt_idmap *idmap,
++		    struct inode *inode ,struct dentry *dentry,
++		    umode_t umode) { return 0; }
++
++		static const struct inode_operations
++			iops __attribute__ ((unused)) = {
++			.create         = inode_create,
++		};
++	],[])
++
+ 	dnl #
+ 	dnl # 3.6 API change
+ 	dnl #
+@@ -74,7 +92,18 @@ AC_DEFUN([ZFS_AC_KERNEL_CREATE], [
+ 			ZFS_LINUX_TEST_RESULT([create_flags], [
+ 				AC_MSG_RESULT(yes)
+ 			],[
+-				ZFS_LINUX_TEST_ERROR([iops->create()])
++				AC_MSG_RESULT(no)
++
++				AC_MSG_CHECKING([whether iops->create() takes struct mnt_idmap* and no flag])
++				ZFS_LINUX_TEST_RESULT([create_mnt_idmap_no_flag], [
++					AC_MSG_RESULT(yes)
++					AC_DEFINE(HAVE_IOPS_CREATE_IDMAP, 1,
++					   [iops->create() takes struct mnt_idmap*])
++					AC_DEFINE(HAVE_IOPS_CREATE_NO_FLAG_ARG, 1,
++					   [iops->create() does not take a flag arg])
++				],[
++					ZFS_LINUX_TEST_ERROR([iops->create()])
++				])
+ 			])
+ 		])
+ 	])
+diff --git a/module/os/linux/zfs/zpl_inode.c b/module/os/linux/zfs/zpl_inode.c
+index 3492f4a033e9bc2ca2c518a4db8b2870c056bd83..9fe395fa9dfa7f986a6f83ad82dbc872458f6ebe 100644
+--- a/module/os/linux/zfs/zpl_inode.c
++++ b/module/os/linux/zfs/zpl_inode.c
+@@ -168,6 +168,9 @@ static int
+ #ifdef HAVE_IOPS_CREATE_USERNS
+ zpl_create(struct user_namespace *user_ns, struct inode *dir,
+     struct dentry *dentry, umode_t mode, bool flag)
++#elif defined(HAVE_IOPS_CREATE_IDMAP) && defined(HAVE_IOPS_CREATE_NO_FLAG_ARG)
++zpl_create(struct mnt_idmap *user_ns, struct inode *dir,
++    struct dentry *dentry, umode_t mode)
+ #elif defined(HAVE_IOPS_CREATE_IDMAP)
+ zpl_create(struct mnt_idmap *user_ns, struct inode *dir,
+     struct dentry *dentry, umode_t mode, bool flag)
