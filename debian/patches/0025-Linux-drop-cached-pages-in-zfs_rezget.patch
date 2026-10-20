@@ -1,0 +1,53 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: cppudge <disident47@gmail.com>
+Date: Thu, 3 Sep 2026 23:34:48 +0700
+Subject: [PATCH] Linux: drop cached pages in zfs_rezget()
+
+After zfs rollback (or zfs recv -F) of a mounted dataset,
+zfs_resume_fs() calls zfs_rezget() for every surviving znode. On Linux
+it reloads the SA attributes but never touches the inode's page cache.
+A file whose object number, generation and size are unchanged but whose
+data blocks differ keeps serving pre-rollback data from pages that were
+resident (the file had been mmap()ed) and later refreshed by
+update_pages() from a write(). Both mappedread() and mmap() return the
+stale pages; reading through .zfs/snapshot is correct, so the on-disk
+data is fine.
+
+The FreeBSD port handles this by calling vn_pages_remove_valid() at the
+start of zfs_rezget(). Do the equivalent on Linux with
+truncate_inode_pages() before reloading the znode, so pages are dropped
+on the error paths as well. Dirty pages are discarded on purpose: their
+content belongs to the state being rolled back, and writeback is blocked
+on z_teardown_lock during suspend/resume anyway. Live mappings are
+unmapped and fault the correct data back in through zfs_getpage().
+
+Reviewed-by: Brian Behlendorf <behlendorf1@llnl.gov>
+Signed-off-by: Petr Slavyagin <disident47@gmail.com>
+Closes #10931
+Closes #19013
+(cherry picked from commit 8eb65b0ea563945280217d14fae82ea59580b774)
+Signed-off-by: Stoiko Ivanov <s.ivanov@proxmox.com>
+---
+ module/os/linux/zfs/zfs_znode_os.c | 9 +++++++++
+ 1 file changed, 9 insertions(+)
+
+diff --git a/module/os/linux/zfs/zfs_znode_os.c b/module/os/linux/zfs/zfs_znode_os.c
+index a106081702c4d0ae12a0004c60d0be055fe65bd5..3ed14dfbfc009e51cda59b57fbe2d0ad9cdde420 100644
+--- a/module/os/linux/zfs/zfs_znode_os.c
++++ b/module/os/linux/zfs/zfs_znode_os.c
+@@ -1194,6 +1194,15 @@ zfs_rezget(znode_t *zp)
+ 	if (zp->z_is_ctldir)
+ 		return (0);
+ 
++	/*
++	 * Drop cached pages before reloading the znode.  After a rollback or
++	 * a forced receive the object may hold different data under the same
++	 * inode, size and generation; stale Uptodate pages would otherwise be
++	 * served by mappedread() and mmap() (see #10931).  FreeBSD does the
++	 * same here via vn_pages_remove().
++	 */
++	truncate_inode_pages(ZTOI(zp)->i_mapping, 0);
++
+ 	zh = zfs_znode_hold_enter(zfsvfs, obj_num);
+ 
+ 	mutex_enter(&zp->z_acl_lock);
