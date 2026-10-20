@@ -1,0 +1,344 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: "Vincent S. Cojot" <ElCoyote27@users.noreply.github.com>
+Date: Mon, 21 Sep 2026 18:47:34 +0200
+Subject: [PATCH] rpm: Add support for building akmod packages
+
+Add akmod (Automatic Kernel Module) support to ZFS, providing a third
+packaging option alongside the existing DKMS and kmod packages.
+
+Akmod packages automatically build binary kmod RPMs when new kernels
+are installed, enabling:
+- Automatic kernel module rebuilds on kernel updates
+- Distribution of binary kmod RPMs without recompilation
+- Seamless minor version upgrades on RHEL/Fedora and clones
+
+Key changes:
+- rpm/generic/zfs-kmod.spec.in: Add conditional akmod support via
+  rpmbuild --define '_enable_akmod 1'. When enabled, sets
+  buildforkernels=akmod and repo=rpmfusion so kmodtool generates an
+  akmod-zfs package. Add -common subpackage for shared license/doc
+  files. Guard chmod and %files sections for empty kernel_versions.
+  Make kmod-devel packages opt-in via %bcond_with devel to prevent
+  akmods from installing unnecessary devel packages on every kernel
+  update. When devel is not enabled, devel header files are cleaned
+  from the buildroot to avoid unpackaged-files errors.
+- config/rpm.am: Add 'make rpm-akmod' and 'make srpm-akmod' targets.
+  These targets use the generic spec with _enable_akmod and
+  intentionally omit kernel-specific defines (kernels, ksrc, kobj)
+  so kmodtool enters its akmod-only code path.  The existing
+  rpm-kmod/srpm-kmod targets pass --with devel to preserve the
+  current behavior of producing devel packages.
+- config/zfs-build.m4: Update comments to document the akmod vs
+  regular kmod distinction for RPM_DEFINE_KMOD.
+- scripts/kmodtool: Fix a pre-existing bug where
+  print_rpmtemplate_kmoddevelpkg (the common kmod-NAME-devel package)
+  was called inside the per-kernel loop in print_customrpmtemplate
+  and print_rpmtemplate, causing duplicate %package definitions when
+  multiple kernel-devel packages are installed. Move it outside the
+  loop so it is emitted exactly once.
+
+The akmod infrastructure requires the 'akmods' package to be installed
+on the target system. When the akmod-zfs RPM is installed, it places
+a zfs-kmod src.rpm in /usr/src/akmods/. The akmods service then
+automatically rebuilds it for the running kernel via rpmbuild
+--define 'kernels <uname-r>' --rebuild.
+
+Usage:
+  make rpm-akmod    # Build akmod-zfs, kmod-zfs (meta), zfs-kmod-common
+  make rpm-kmod     # Build kmod with devel packages (unchanged behavior)
+
+Tested on Fedora 43 (kernel 7.1), RHEL 9.8 (kernel 5.14), and
+Alma Linux 10 (kernel 6.12). Verified akmods rebuilds produce only
+kmod-zfs (no devel packages) after kernel updates.
+
+Reviewed-by: Tony Hutter <hutter2@llnl.gov>
+Reviewed-by: Brian Behlendorf <behlendorf1@llnl.gov>
+Signed-off-by: Vincent S. Cojot <vcojot@redhat.com>
+Closes #19099
+(cherry picked from commit bb1c7ed97a92d77096852f063cbfdbfee177b185)
+Signed-off-by: Stoiko Ivanov <s.ivanov@proxmox.com>
+---
+ config/rpm.am                | 20 ++++++++++----
+ config/zfs-build.m4          |  6 ++---
+ rpm/generic/zfs-kmod.spec.in | 41 ++++++++++++++++++++++++-----
+ scripts/kmodtool             | 51 ++++++++++++++++++++++--------------
+ 4 files changed, 85 insertions(+), 33 deletions(-)
+
+diff --git a/config/rpm.am b/config/rpm.am
+index 4ccf549b3a7a842d4a048b97fec8e86a70e00529..5d8188309c08bfb77cc4042c67a63d52e5ff35d5 100644
+--- a/config/rpm.am
++++ b/config/rpm.am
+@@ -7,15 +7,15 @@
+ # Build targets for RPM packages.
+ ###############################################################################
+ 
+-PHONY += srpm srpms srpm-kmod srpm-dkms srpm-utils
+-PHONY += rpm rpms rpm-kmod rpm-dkms rpm-utils rpm-utils-initramfs
++PHONY += srpm srpms srpm-kmod srpm-dkms srpm-utils srpm-akmod
++PHONY += rpm rpms rpm-kmod rpm-dkms rpm-utils rpm-utils-initramfs rpm-akmod
+ PHONY += srpm-common rpm-common rpm-local
+ 
+-srpm-kmod srpm-dkms srpm-utils: dist
++srpm-kmod srpm-dkms srpm-utils srpm-akmod: dist
+ 
+ srpm-kmod:
+ 	$(MAKE) $(AM_MAKEFLAGS) pkg="${PACKAGE}-kmod" \
+-		def='${SRPM_DEFINE_COMMON} ${SRPM_DEFINE_KMOD}' srpm-common
++		def='${SRPM_DEFINE_COMMON} ${SRPM_DEFINE_KMOD} --with devel' srpm-common
+ 
+ srpm-dkms:
+ 	$(MAKE) $(AM_MAKEFLAGS) pkg="${PACKAGE}-dkms" \
+@@ -25,12 +25,17 @@ srpm-utils:
+ 	$(MAKE) $(AM_MAKEFLAGS) pkg="${PACKAGE}" \
+ 		def='${SRPM_DEFINE_COMMON} ${SRPM_DEFINE_UTIL}' srpm-common
+ 
++srpm-akmod:
++	$(MAKE) $(AM_MAKEFLAGS) pkg="${PACKAGE}-kmod" \
++		def='${SRPM_DEFINE_COMMON} --define "_wrong_version_format_terminate_build 0" --define "_enable_akmod 1"' \
++		RPM_SPEC_DIR="rpm/generic" srpm-common
++
+ srpm: srpm-kmod srpm-dkms srpm-utils
+ srpms: srpm-kmod srpm-dkms srpm-utils
+ 
+ rpm-kmod: srpm-kmod
+ 	$(MAKE) $(AM_MAKEFLAGS) pkg="${PACKAGE}-kmod" \
+-		def='${RPM_DEFINE_COMMON} ${RPM_DEFINE_KMOD}' rpm-common
++		def='${RPM_DEFINE_COMMON} ${RPM_DEFINE_KMOD} --with devel' rpm-common
+ 
+ rpm-dkms: srpm-dkms
+ 	$(MAKE) $(AM_MAKEFLAGS) pkg="${PACKAGE}-dkms" \
+@@ -52,6 +57,11 @@ rpm-utils-initramfs: srpm-utils
+ 	$(MAKE) $(AM_MAKEFLAGS) pkg="${PACKAGE}" \
+ 		def='${RPM_DEFINE_COMMON} ${RPM_DEFINE_UTIL} ${RPM_DEFINE_INITRAMFS}' rpm-common
+ 
++rpm-akmod: srpm-akmod
++	$(MAKE) $(AM_MAKEFLAGS) pkg="${PACKAGE}-kmod" \
++		def='${RPM_DEFINE_COMMON} --define "_wrong_version_format_terminate_build 0" --define "_enable_akmod 1"' \
++		RPM_SPEC_DIR="rpm/generic" rpm-common
++
+ rpm: rpm-kmod rpm-dkms rpm-utils
+ rpms: rpm-kmod rpm-dkms rpm-utils
+ 
+diff --git a/config/zfs-build.m4 b/config/zfs-build.m4
+index 49e46dfd5632164a23eae67b4ace4ee9e6fc5e6e..5d245b638d1e097009e9fc589ff0199511567a24 100644
+--- a/config/zfs-build.m4
++++ b/config/zfs-build.m4
+@@ -438,9 +438,9 @@ AC_DEFUN([ZFS_AC_RPM], [
+ 		AC_SUBST(MULTIARCH_LIBDIR)
+ 	])
+ 
+-	dnl # Make RPM_DEFINE_KMOD additions conditional on CONFIG_KERNEL,
+-	dnl # since the values will not be set otherwise. The spec files
+-	dnl # provide defaults for them.
++	dnl # For akmod builds, we don't need to define kernel build parameters
++	dnl # since akmods handles this automatically. For regular kmod builds,
++	dnl # we need all the kernel build parameters.
+ 	dnl #
+ 	RPM_DEFINE_KMOD='--define "_wrong_version_format_terminate_build 0"'
+ 	AM_COND_IF([CONFIG_KERNEL], [
+diff --git a/rpm/generic/zfs-kmod.spec.in b/rpm/generic/zfs-kmod.spec.in
+index 7ed828bd0c9c4f5227f6fc93c7ea822a8f42e45a..b23c8cca27af2dc74963f40c827c7a9f7f770deb 100644
+--- a/rpm/generic/zfs-kmod.spec.in
++++ b/rpm/generic/zfs-kmod.spec.in
+@@ -1,3 +1,4 @@
++%define debug_package %{nil}
+ %define module  @PACKAGE@
+ 
+ %if !%{defined ksrc}
+@@ -28,16 +29,19 @@
+ %endif
+ %endif
+ 
+-#define repo    rpmfusion
++# Conditional akmod support - can be enabled via: rpmbuild --define "_enable_akmod 1"
++%{?_enable_akmod:%define repo rpmfusion}
++%{!?_enable_akmod:#define repo rpmfusion}
+ #define repo    chaos
+ 
+ # (un)define the next line to either build for the newest or all current kernels
+-%define buildforkernels newest
++%{?_enable_akmod:%define buildforkernels akmod}
++%{!?_enable_akmod:%define buildforkernels newest}
+ #define buildforkernels current
+-#define buildforkernels akmod
+ 
+ %bcond_with     debug
+ %bcond_with     debuginfo
++%bcond_with     devel
+ 
+ 
+ Name:           %{module}-kmod
+@@ -72,7 +76,8 @@ Conflicts:      %{module}-dkms
+ # Building for a repository use the proper build-sysbuild package
+ # to determine which kernel-devel packages should be installed.
+ BuildRequires:  %{_bindir}/kmodtool
+-%{!?kernels:BuildRequires: buildsys-build-%{repo}-kerneldevpkgs-%{?buildforkernels:%{buildforkernels}}%{!?buildforkernels:current}-%{_target_cpu}}
++# Skip buildsys-build for akmod builds as akmods handles kernel dependencies
++%{!?_enable_akmod:%{!?kernels:BuildRequires: buildsys-build-%{repo}-kerneldevpkgs-%{?buildforkernels:%{buildforkernels}}%{!?buildforkernels:current}-%{_target_cpu}}}
+ 
+ %else
+ 
+@@ -99,18 +104,28 @@ BuildRequires:  %{_bindir}/kmodtool
+ # Kmodtool does its magic here.  A patched version of kmodtool is shipped
+ # with the source rpm until kmod development packages are supported upstream.
+ # https://bugzilla.rpmfusion.org/show_bug.cgi?id=2714
+-%{expand:%(bash %{SOURCE10} --target %{_target_cpu} %{?repo:--repo %{?repo}} --kmodname %{name} %{?buildforkernels:--%{buildforkernels}} --devel %{?prefix:--prefix "%{?prefix}"} %{?kernels:--for-kernels "%{?kernels}"} %{?kernelbuildroot:--buildroot "%{?kernelbuildroot}"} 2>/dev/null) }
++%{expand:%(bash %{SOURCE10} --target %{_target_cpu} %{?repo:--repo %{?repo}} --kmodname %{name} %{?buildforkernels:--%{buildforkernels}} %{?with_devel:--devel} %{?prefix:--prefix "%{?prefix}"} %{?kernels:--for-kernels "%{?kernels}"} %{?kernelbuildroot:--buildroot "%{?kernelbuildroot}"} 2>/dev/null) }
+ 
+ 
+ %description
+ This package contains the ZFS kernel modules.
+ 
++# akmod package requires -common subpackage
++%package common
++Summary: Common files for the ZFS kernel modules
++Requires: %{name} = %{version}-%{release}
++BuildArch: noarch
++
++%description common
++This package contains the common files (license, documentation, etc.) for the
++ZFS kernel modules.
++
+ %prep
+ # Error out if there was something wrong with kmodtool.
+ %{?kmodtool_check}
+ 
+ # Print kmodtool output for debugging purposes:
+-bash %{SOURCE10}  --target %{_target_cpu} %{?repo:--repo %{?repo}} --kmodname %{name} %{?buildforkernels:--%{buildforkernels}} --devel %{?prefix:--prefix "%{?prefix}"} %{?kernels:--for-kernels "%{?kernels}"} %{?kernelbuildroot:--buildroot "%{?kernelbuildroot}"} 2>/dev/null
++bash %{SOURCE10}  --target %{_target_cpu} %{?repo:--repo %{?repo}} --kmodname %{name} %{?buildforkernels:--%{buildforkernels}} %{?with_devel:--devel} %{?prefix:--prefix "%{?prefix}"} %{?kernels:--for-kernels "%{?kernels}"} %{?kernelbuildroot:--buildroot "%{?kernelbuildroot}"} 2>/dev/null
+ 
+ %if %{with debug}
+     %define debug --enable-debug
+@@ -129,6 +144,9 @@ bash %{SOURCE10}  --target %{_target_cpu} %{?repo:--repo %{?repo}} --kmodname %{
+ 
+ %setup -q -c -T -a 0
+ 
++# For common package
++cp %{module}-%{version}/{COPYRIGHT,LICENSE,NOTICE,README.md} .
++
+ for kernel_version in %{?kernel_versions}; do
+     %{__mkdir} _kmod_build_${kernel_version%%___*}
+ done
+@@ -207,9 +225,20 @@ for kernel_version in %{?kernel_versions}; do
+     cd ..
+ done
+ # find-debuginfo.sh only considers executables
++%if %{defined kernel_versions}
+ chmod u+x ${RPM_BUILD_ROOT}%{kmodinstdir_prefix}/*/extra/*/*
++%endif
+ %{?akmod_install}
++# Remove devel files when devel packages are not being built,
++# to prevent rpmbuild from erroring on unpackaged files.
++%if !%{with devel}
++rm -rf ${RPM_BUILD_ROOT}/usr/src/%{module}-*
++%endif
+ 
+ 
+ %clean
+ rm -rf $RPM_BUILD_ROOT
++
++%files common
++%doc README.md
++%license COPYRIGHT LICENSE NOTICE
+diff --git a/scripts/kmodtool b/scripts/kmodtool
+index e24f206e698a29d19d8a771f831ff700c7858f04..d8d2af04fc9c2d9e384a1c05b718fb1703812cc3 100755
+--- a/scripts/kmodtool
++++ b/scripts/kmodtool
+@@ -332,44 +332,47 @@ EOF
+ 
+ print_customrpmtemplate ()
+ {
++	local first_kernel_custom=""
++	local first_kernel_redhat=""
++	local first_kernel_redhat_variant=""
++
+ 	for kernel in ${1}
+ 	do
+ 		if [[ -e "${prefix}/lib/modules/${kernel}/build/Makefile" ]]; then
+-			# likely a user-build-kernel with available buildfiles
+-			# fixme: we should check if uname from Makefile is the same as ${kernel}
+-
+ 			kernel_versions="${kernel_versions}${kernel}___${prefix}/lib/modules/${kernel}/build/ "
+ 			print_rpmtemplate_per_kmodpkg --custom "${kernel}"
+ 
+-			# create development package
+ 			if [[ -n "${devel}" ]]; then
+-				# create devel package including common headers
+-				print_rpmtemplate_kmoddevelpkg --custom "${kernel}"
+-
+-				# create devel package
+ 				print_rpmtemplate_per_kmoddevelpkg --custom "${kernel}"
+ 			fi
++			[[ -z "${first_kernel_custom}" ]] && first_kernel_custom="${kernel}"
+ 		elif [[ -e "${buildroot}/usr/src/kernels/${kernel}" ]]; then
+-			# this looks like a Fedora/RH kernel -- print a normal template (which includes the proper BR) and be happy :)
+ 			kernel_versions="${kernel_versions}${kernel}___${buildroot}%{_usrsrc}/kernels/${kernel} "
+ 
+-			# parse kernel versions string and print template
+ 			local kernel_verrelarch=${kernel%%${kernels_known_variants}}
+ 			print_rpmtemplate_per_kmodpkg --redhat ${kernel} ${kernel##${kernel_verrelarch}}
+ 
+-			# create development package
+ 			if [[ -n "${devel}" ]]; then
+-				# create devel package including common headers
+-				print_rpmtemplate_kmoddevelpkg --redhat ${kernel} ${kernel##${kernel_verrelarch}}
+-
+-				# create devel package
+ 				print_rpmtemplate_per_kmoddevelpkg --redhat ${kernel} ${kernel##${kernel_verrelarch}}
+ 			fi
++			if [[ -z "${first_kernel_redhat}" ]]; then
++				first_kernel_redhat="${kernel}"
++				first_kernel_redhat_variant="${kernel##${kernel_verrelarch}}"
++			fi
+ 		else
+ 			error_out 2 "Don't know how to handle ${kernel} -- ${prefix}/lib/modules/${kernel}/build/Makefile not found"
+ 		fi
+ 	done
+ 
++	# Common devel package (only once, outside the per-kernel loop)
++	if [[ -n "${devel}" ]]; then
++		if [[ -n "${first_kernel_custom}" ]]; then
++			print_rpmtemplate_kmoddevelpkg --custom "${first_kernel_custom}"
++		elif [[ -n "${first_kernel_redhat}" ]]; then
++			print_rpmtemplate_kmoddevelpkg --redhat ${first_kernel_redhat} ${first_kernel_redhat_variant}
++		fi
++	fi
++
+ 	# well, it's no header anymore, but who cares ;-)
+ 	print_rpmtemplate_header
+ }
+@@ -386,6 +389,9 @@ print_rpmtemplate ()
+ 	# and print it and some other required stuff as macro
+ 	print_rpmtemplate_header
+ 
++	local first_kernel=""
++	local first_kernel_variant=""
++
+ 	# now print the packages
+ 	for kernel in ${kernel_versions_to_build_for} ; do
+ 
+@@ -398,13 +404,20 @@ print_rpmtemplate ()
+ 		print_rpmtemplate_per_kmodpkg "${kernel}" "${kernel##${kernel_verrelarch}}"
+ 
+ 		if [[ -n "${devel}" ]]; then
+-			# create devel package including common headers
+-			print_rpmtemplate_kmoddevelpkg "${kernel}" "${kernel##${kernel_verrelarch}}"
+-
+-			# create devel package
++			# create per-kernel devel package
+ 			print_rpmtemplate_per_kmoddevelpkg "${kernel}" "${kernel##${kernel_verrelarch}}"
+ 		fi
++
++		if [[ -z "${first_kernel}" ]]; then
++			first_kernel="${kernel}"
++			first_kernel_variant="${kernel##${kernel_verrelarch}}"
++		fi
+ 	done
++
++	# Common devel package (only once, outside the per-kernel loop)
++	if [[ -n "${devel}" && -n "${first_kernel}" ]]; then
++		print_rpmtemplate_kmoddevelpkg "${first_kernel}" "${first_kernel_variant}"
++	fi
+ }
+ 
+ myprog_help ()

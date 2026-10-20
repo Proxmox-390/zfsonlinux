@@ -1,0 +1,74 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Matt Turner <mattst88@gmail.com>
+Date: Sat, 15 Aug 2026 22:05:41 -0400
+Subject: [PATCH] Allow renames within a single directory under project
+ inheritance
+
+A rename that keeps the object in the directory it already lives in
+cannot move it between projects, so refusing it with EXDEV is never
+right. Objects created before the previous commit carry no project ID of
+their own, which makes this reachable on existing pools: a symlink in a
+project directory cannot be renamed even to another name beside itself,
+and "ln -sfn" over an existing path fails.
+
+zfs_link() keeps its unconditional check. It has no source directory to
+compare against -- a hard link names an object that may live anywhere --
+so there is no equivalent "the object is already here" case to exempt.
+Linking a pre-existing symlink, device node or FIFO into the project
+directory that already holds it therefore still fails with EXDEV, until
+the object is given a project ID of its own.
+
+Reviewed-by: Brian Behlendorf <behlendorf1@llnl.gov>
+Signed-off-by: Matt Turner <mattst88@gmail.com>
+Closes #18932
+(cherry picked from commit 594332758f794fa9f969e9c72b6e93f0bf9f71af)
+Signed-off-by: Stoiko Ivanov <s.ivanov@proxmox.com>
+---
+ module/os/freebsd/zfs/zfs_vnops_os.c | 10 +++++++++-
+ module/os/linux/zfs/zfs_vnops_os.c   | 10 +++++++++-
+ 2 files changed, 18 insertions(+), 2 deletions(-)
+
+diff --git a/module/os/freebsd/zfs/zfs_vnops_os.c b/module/os/freebsd/zfs/zfs_vnops_os.c
+index f1278f00bdc067f536442b4abb24c6d538f6a413..91181ea86a450a43687c0af842b11d08ed2016be 100644
+--- a/module/os/freebsd/zfs/zfs_vnops_os.c
++++ b/module/os/freebsd/zfs/zfs_vnops_os.c
+@@ -3384,8 +3384,16 @@ zfs_do_rename_impl(vnode_t *sdvp, vnode_t **svpp, struct componentname *scnp,
+ 	 * not only the project ID, but also the ZFS_PROJINHERIT flag. Under
+ 	 * such case, we only allow renames into our tree when the project
+ 	 * IDs are the same.
++	 *
++	 * A rename within a single directory leaves the object exactly where
++	 * it already is, so it cannot move it between projects and is always
++	 * allowed.  Objects created before symlinks and other non-regular
++	 * files began inheriting a project ID carry none of their own, and
++	 * would otherwise not be renameable within the very directory that
++	 * holds them -- which breaks "ln -sfn", implemented as
++	 * create-under-a-temporary-name-then-rename.
+ 	 */
+-	if (tdzp->z_pflags & ZFS_PROJINHERIT &&
++	if (sdzp != tdzp && tdzp->z_pflags & ZFS_PROJINHERIT &&
+ 	    tdzp->z_projid != szp->z_projid) {
+ 		error = SET_ERROR(EXDEV);
+ 		goto out;
+diff --git a/module/os/linux/zfs/zfs_vnops_os.c b/module/os/linux/zfs/zfs_vnops_os.c
+index 4557b8916bca4f06aa9159c6c689b9b1d477d896..f27b877da06dd187f496102924fcc040efb38405 100644
+--- a/module/os/linux/zfs/zfs_vnops_os.c
++++ b/module/os/linux/zfs/zfs_vnops_os.c
+@@ -2993,8 +2993,16 @@ top:
+ 	 * not only the project ID, but also the ZFS_PROJINHERIT flag. Under
+ 	 * such case, we only allow renames into our tree when the project
+ 	 * IDs are the same.
++	 *
++	 * A rename within a single directory leaves the object exactly where
++	 * it already is, so it cannot move it between projects and is always
++	 * allowed.  Objects created before symlinks and other non-regular
++	 * files began inheriting a project ID carry none of their own, and
++	 * would otherwise not be renameable within the very directory that
++	 * holds them -- which breaks "ln -sfn", implemented as
++	 * create-under-a-temporary-name-then-rename.
+ 	 */
+-	if (tdzp->z_pflags & ZFS_PROJINHERIT &&
++	if (sdzp != tdzp && tdzp->z_pflags & ZFS_PROJINHERIT &&
+ 	    tdzp->z_projid != szp->z_projid) {
+ 		error = SET_ERROR(EXDEV);
+ 		goto out;

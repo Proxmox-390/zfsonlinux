@@ -1,0 +1,209 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Matt Turner <mattst88@gmail.com>
+Date: Fri, 14 Aug 2026 14:59:08 -0400
+Subject: [PATCH] Inherit the project ID for every object type
+
+zfs_mknode() only assigned a project ID to regular files and
+directories, so a symlink, device node, FIFO or socket created inside a
+directory with ZFS_PROJINHERIT set was left at ZFS_DEFAULT_PROJID. The
+cross-project checks in zfs_rename() and zfs_link() compare the object's
+project ID against the directory's, so such an object is treated as
+foreign to the very directory holding it, and cannot be renamed or
+linked there at all -- "ln -sfn", which creates the new symlink under a
+temporary name and renames it into place, fails with EXDEV.
+
+ext4 and XFS store a project ID on every inode type and so do not have
+this problem. Do the same, and quota-check new symlinks and rename
+whiteouts against the inherited ID rather than the default one, so their
+space is accounted to the project that owns them.
+
+This changes accounting for newly created objects: symlinks, device
+nodes and FIFOs now consume the project's quota where they previously
+consumed none, so on a dataset already at its project quota, creating
+one begins to fail with EDQUOT where it used to succeed. The space
+involved is small, but the change in behavior is visible.
+
+The ZFS_PROJINHERIT flag itself keeps propagating to regular files and
+directories only, leaving lsattr(1) output unchanged.
+
+Note that this only covers newly created objects; symlinks already on
+disk keep the default project ID.
+
+Reviewed-by: Brian Behlendorf <behlendorf1@llnl.gov>
+Signed-off-by: Matt Turner <mattst88@gmail.com>
+Closes #18932
+(cherry picked from commit 7f0d8d3d1fdf8a1c0711350b7ec6f9b6a571c647)
+Signed-off-by: Stoiko Ivanov <s.ivanov@proxmox.com>
+---
+ module/os/freebsd/zfs/zfs_vnops_os.c |  5 ++--
+ module/os/freebsd/zfs/zfs_znode_os.c | 36 ++++++++++++++++------------
+ module/os/linux/zfs/zfs_vnops_os.c   | 15 ++++--------
+ module/os/linux/zfs/zfs_znode_os.c   | 36 ++++++++++++++++------------
+ 4 files changed, 49 insertions(+), 43 deletions(-)
+
+diff --git a/module/os/freebsd/zfs/zfs_vnops_os.c b/module/os/freebsd/zfs/zfs_vnops_os.c
+index 0080986787cc19481ada9a411ee7307522faa762..f1278f00bdc067f536442b4abb24c6d538f6a413 100644
+--- a/module/os/freebsd/zfs/zfs_vnops_os.c
++++ b/module/os/freebsd/zfs/zfs_vnops_os.c
+@@ -1119,8 +1119,7 @@ zfs_create(znode_t *dzp, const char *name, vattr_t *vap, int excl, int mode,
+ 	    cr, vsecp, &acl_ids, NULL)) != 0)
+ 		goto out;
+ 
+-	if (S_ISREG(vap->va_mode) || S_ISDIR(vap->va_mode))
+-		projid = zfs_inherit_projid(dzp);
++	projid = zfs_inherit_projid(dzp);
+ 	if (zfs_acl_ids_overquota(zfsvfs, &acl_ids, projid)) {
+ 		zfs_acl_ids_free(&acl_ids);
+ 		error = SET_ERROR(EDQUOT);
+@@ -3659,7 +3658,7 @@ zfs_symlink(znode_t *dzp, const char *name, vattr_t *vap,
+ 		return (error);
+ 	}
+ 
+-	if (zfs_acl_ids_overquota(zfsvfs, &acl_ids, ZFS_DEFAULT_PROJID)) {
++	if (zfs_acl_ids_overquota(zfsvfs, &acl_ids, zfs_inherit_projid(dzp))) {
+ 		zfs_acl_ids_free(&acl_ids);
+ 		zfs_exit(zfsvfs, FTAG);
+ 		return (SET_ERROR(EDQUOT));
+diff --git a/module/os/freebsd/zfs/zfs_znode_os.c b/module/os/freebsd/zfs/zfs_znode_os.c
+index b9f427b397055c1e69856014206a402559438ef9..089a221b64a0b6f2fae26d9a7fd34ca3dfb2fe6e 100644
+--- a/module/os/freebsd/zfs/zfs_znode_os.c
++++ b/module/os/freebsd/zfs/zfs_znode_os.c
+@@ -667,22 +667,28 @@ zfs_mknode(znode_t *dzp, vattr_t *vap, dmu_tx_t *tx, cred_t *cr,
+ 	if (flag & IS_XATTR)
+ 		pflags |= ZFS_XATTR;
+ 
+-	if (vap->va_type == VREG || vap->va_type == VDIR) {
+-		/*
+-		 * With ZFS_PROJID flag, we can easily know whether there is
+-		 * project ID stored on disk or not. See zpl_get_file_info().
+-		 */
+-		if (obj_type != DMU_OT_ZNODE &&
+-		    dmu_objset_projectquota_enabled(zfsvfs->z_os))
+-			pflags |= ZFS_PROJID;
++	/*
++	 * With ZFS_PROJID flag, we can easily know whether there is
++	 * project ID stored on disk or not. See zpl_get_file_info().
++	 */
++	if (obj_type != DMU_OT_ZNODE &&
++	    dmu_objset_projectquota_enabled(zfsvfs->z_os))
++		pflags |= ZFS_PROJID;
+ 
+-		/*
+-		 * Inherit project ID from parent if required.
+-		 */
+-		projid = zfs_inherit_projid(dzp);
+-		if (dzp_pflags & ZFS_PROJINHERIT)
+-			pflags |= ZFS_PROJINHERIT;
+-	}
++	/*
++	 * Inherit project ID from parent if required.  Every object type
++	 * takes part, as ext4 and XFS do: an object that carried no project
++	 * ID of its own would be treated as belonging to a different project
++	 * than the directory holding it, so zfs_rename() and zfs_link()
++	 * would refuse it with EXDEV even within its own project.
++	 *
++	 * The ZFS_PROJINHERIT flag itself keeps passing to regular files and
++	 * directories only, as before, so that lsattr(1) output is unchanged.
++	 */
++	projid = zfs_inherit_projid(dzp);
++	if ((vap->va_type == VREG || vap->va_type == VDIR) &&
++	    (dzp_pflags & ZFS_PROJINHERIT))
++		pflags |= ZFS_PROJINHERIT;
+ 
+ 	/*
+ 	 * No execs denied will be determined when zfs_mode_compute() is called.
+diff --git a/module/os/linux/zfs/zfs_vnops_os.c b/module/os/linux/zfs/zfs_vnops_os.c
+index cb6321e4f454cbb9fd361f71230499eefe54faa6..4557b8916bca4f06aa9159c6c689b9b1d477d896 100644
+--- a/module/os/linux/zfs/zfs_vnops_os.c
++++ b/module/os/linux/zfs/zfs_vnops_os.c
+@@ -736,8 +736,7 @@ top:
+ 			goto out;
+ 		have_acl = B_TRUE;
+ 
+-		if (S_ISREG(vap->va_mode) || S_ISDIR(vap->va_mode))
+-			projid = zfs_inherit_projid(dzp);
++		projid = zfs_inherit_projid(dzp);
+ 		if (zfs_acl_ids_overquota(zfsvfs, &acl_ids, projid)) {
+ 			zfs_acl_ids_free(&acl_ids);
+ 			error = SET_ERROR(EDQUOT);
+@@ -930,8 +929,7 @@ top:
+ 		goto out;
+ 	have_acl = B_TRUE;
+ 
+-	if (S_ISREG(vap->va_mode) || S_ISDIR(vap->va_mode))
+-		projid = zfs_inherit_projid(dzp);
++	projid = zfs_inherit_projid(dzp);
+ 	if (zfs_acl_ids_overquota(zfsvfs, &acl_ids, projid)) {
+ 		zfs_acl_ids_free(&acl_ids);
+ 		error = SET_ERROR(EDQUOT);
+@@ -3057,11 +3055,8 @@ top:
+ 
+ 	/* Set up inode creation for RENAME_WHITEOUT. */
+ 	if (rflags & RENAME_WHITEOUT) {
+-		/*
+-		 * Whiteout files are not regular files or directories, so to
+-		 * match zfs_create() we do not inherit the project id.
+-		 */
+-		uint64_t wo_projid = ZFS_DEFAULT_PROJID;
++		/* Match zfs_create(): the whiteout joins its directory. */
++		uint64_t wo_projid = zfs_inherit_projid(sdzp);
+ 
+ 		error = zfs_zaccess(sdzp, ACE_ADD_FILE, 0, B_FALSE, cr, mnt_ns);
+ 		if (error)
+@@ -3389,7 +3384,7 @@ top:
+ 		return (error);
+ 	}
+ 
+-	if (zfs_acl_ids_overquota(zfsvfs, &acl_ids, ZFS_DEFAULT_PROJID)) {
++	if (zfs_acl_ids_overquota(zfsvfs, &acl_ids, zfs_inherit_projid(dzp))) {
+ 		zfs_acl_ids_free(&acl_ids);
+ 		zfs_dirent_unlock(dl);
+ 		zfs_exit(zfsvfs, FTAG);
+diff --git a/module/os/linux/zfs/zfs_znode_os.c b/module/os/linux/zfs/zfs_znode_os.c
+index dd6bd21a60425b07297ef2d35c6fe90c9ff4dcbe..a106081702c4d0ae12a0004c60d0be055fe65bd5 100644
+--- a/module/os/linux/zfs/zfs_znode_os.c
++++ b/module/os/linux/zfs/zfs_znode_os.c
+@@ -775,22 +775,28 @@ zfs_mknode(znode_t *dzp, vattr_t *vap, dmu_tx_t *tx, cred_t *cr,
+ 	if (flag & IS_XATTR)
+ 		pflags |= ZFS_XATTR;
+ 
+-	if (S_ISREG(vap->va_mode) || S_ISDIR(vap->va_mode)) {
+-		/*
+-		 * With ZFS_PROJID flag, we can easily know whether there is
+-		 * project ID stored on disk or not. See zpl_get_file_info().
+-		 */
+-		if (obj_type != DMU_OT_ZNODE &&
+-		    dmu_objset_projectquota_enabled(zfsvfs->z_os))
+-			pflags |= ZFS_PROJID;
++	/*
++	 * With ZFS_PROJID flag, we can easily know whether there is
++	 * project ID stored on disk or not. See zpl_get_file_info().
++	 */
++	if (obj_type != DMU_OT_ZNODE &&
++	    dmu_objset_projectquota_enabled(zfsvfs->z_os))
++		pflags |= ZFS_PROJID;
+ 
+-		/*
+-		 * Inherit project ID from parent if required.
+-		 */
+-		projid = zfs_inherit_projid(dzp);
+-		if (dzp->z_pflags & ZFS_PROJINHERIT)
+-			pflags |= ZFS_PROJINHERIT;
+-	}
++	/*
++	 * Inherit project ID from parent if required.  Every object type
++	 * takes part, as ext4 and XFS do: an object that carried no project
++	 * ID of its own would be treated as belonging to a different project
++	 * than the directory holding it, so zfs_rename() and zfs_link()
++	 * would refuse it with EXDEV even within its own project.
++	 *
++	 * The ZFS_PROJINHERIT flag itself keeps passing to regular files and
++	 * directories only, as before, so that lsattr(1) output is unchanged.
++	 */
++	projid = zfs_inherit_projid(dzp);
++	if ((S_ISREG(vap->va_mode) || S_ISDIR(vap->va_mode)) &&
++	    (dzp->z_pflags & ZFS_PROJINHERIT))
++		pflags |= ZFS_PROJINHERIT;
+ 
+ 	/*
+ 	 * No execs denied will be determined when zfs_mode_compute() is called.

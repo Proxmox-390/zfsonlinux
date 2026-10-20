@@ -1,0 +1,113 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Andriy Tkachuk <atkachuk@wasabi.com>
+Date: Thu, 27 Aug 2026 17:38:22 +0100
+Subject: [PATCH] arc: harness buf_hdr's anon state invariant checks
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+There are several places where hdr is checked for arc_anon state
+without the hash_lock, for example at arc_release() or at
+arc_buf_destroy(), and it's supposed that the hdr must not be
+in the hash table in this state and not having IO_IN_PROGRESS.
+However, those invariants are not asserted in release builds.
+But even if they would, there is one place in the current code
+where they would pass without noticing the problem.
+
+This place is at arc_write_done() where we first insert hdr
+into the hash table, then clear IO_IN_PROGRESS flag, then drop
+the reference and only then move its state from anon to mru:
+
+  7048  exists = buf_hash_insert(hdr, &hash_lock); /* still anon */
+        ...
+  7081  arc_hdr_clear_flags(hdr, ARC_FLAG_IO_IN_PROGRESS);
+  7082	VERIFY3S(remove_reference(hdr, hdr), >, 0); /* ref: 2 -> 1 */
+  7084  if (exists == NULL && hdr->b_l1hdr.b_state == arc_anon)
+  7085          arc_access(hdr, 0, B_FALSE);      /* anon -> MRU */
+  7086  mutex_exit(hash_lock);
+
+Let's imagine arc_buf_destroy() is called concurrently:
+
+- hdr->b_l1hdr.b_state == arc_anon → true, takes the fast path
+- ASSERT3P(hdr->b_l1hdr.b_buf, ==, buf) → passes
+- ASSERT(ARC_BUF_LAST(buf)) → passes
+- ASSERT(!HDR_IO_IN_PROGRESS(hdr)) → passes, cleared at 7081
+- VERIFY0(remove_reference(hdr, tag)) → refcnt 1→0, returns 0 → passes
+- remove_reference() sees state == arc_anon → arc_hdr_destroy(hdr)
+
+Every single guard is satisfied, and the header is kmem_cache_freed
+while still linked in its hash bucket. Could it be the root cause
+of #18782 kernel panic? We cannot prove this, but the harnessing
+we suggest here would allow to prove it.
+
+(Actually, since commit 023d44b9e VERIFY0P(hdr->b_hash_next) at
+arc_hdr_destroy() should catch it, but I think it would be better
+catching it earlier by the code and more explicitly.)
+
+So apart from promoting a couple asserts to verifies at
+arc_hdr_destroy() and arc_release(), like !HDR_IO_IN_PROGRESS(hdr)
+and !HDR_IN_HASH_TABLE(hdr), which are cheap, we also close the
+window at arc_write_done() which allows anon hdr to satisfy some
+of the assertions, and yet be in the hash table, by changing hdr's
+state from anon to MRU *before* clearing ARC_FLAG_IO_IN_PROGRESS
+flag and dropping reference on it.
+
+Reviewed-by: Alexander Motin <alexander.motin@TrueNAS.com>
+Reviewed-by: Brian Behlendorf <behlendorf1@llnl.gov>
+Signed-off-by: Andriy Tkachuk <atkachuk@wasabi.com>
+Closes #18968
+(cherry picked from commit b0fff48dc10459b781f18c905399a24db3dae529)
+(cherry picked from commit 57fbddf6bbcf9e130157de825785f2f9d9ffa6bb)
+Signed-off-by: Stoiko Ivanov <s.ivanov@proxmox.com>
+---
+ module/zfs/arc.c | 12 ++++++------
+ 1 file changed, 6 insertions(+), 6 deletions(-)
+
+diff --git a/module/zfs/arc.c b/module/zfs/arc.c
+index 34dad8b0e27e49c42281c6878fd12c9b2ad45179..4cd2a67eb2a85398627fad5531dc1aa20f1b2f5d 100644
+--- a/module/zfs/arc.c
++++ b/module/zfs/arc.c
+@@ -3654,8 +3654,8 @@ arc_hdr_destroy(arc_buf_hdr_t *hdr)
+ 		ASSERT(zfs_refcount_is_zero(&hdr->b_l1hdr.b_refcnt));
+ 		ASSERT3P(hdr->b_l1hdr.b_state, ==, arc_anon);
+ 	}
+-	ASSERT(!HDR_IO_IN_PROGRESS(hdr));
+-	ASSERT(!HDR_IN_HASH_TABLE(hdr));
++	VERIFY(!HDR_IO_IN_PROGRESS(hdr));
++	VERIFY(!HDR_IN_HASH_TABLE(hdr));
+ 
+ 	if (HDR_HAS_L2HDR(hdr)) {
+ 		l2arc_dev_t *dev = hdr->b_l2hdr.b_dev;
+@@ -6612,7 +6612,7 @@ arc_release(arc_buf_t *buf, const void *tag)
+ 	 * linked into the hash table.
+ 	 */
+ 	if (hdr->b_l1hdr.b_state == arc_anon) {
+-		ASSERT(!HDR_IO_IN_PROGRESS(hdr));
++		VERIFY(!HDR_IO_IN_PROGRESS(hdr));
+ 		ASSERT(!HDR_IN_HASH_TABLE(hdr));
+ 		ASSERT(!HDR_HAS_L2HDR(hdr));
+ 
+@@ -6827,8 +6827,8 @@ arc_write_ready(zio_t *zio)
+ 	if (HDR_IO_IN_PROGRESS(hdr)) {
+ 		ASSERT(zio->io_flags & ZIO_FLAG_REEXECUTED);
+ 	} else {
+-		arc_hdr_set_flags(hdr, ARC_FLAG_IO_IN_PROGRESS);
+ 		add_reference(hdr, hdr); /* For IO_IN_PROGRESS. */
++		arc_hdr_set_flags(hdr, ARC_FLAG_IO_IN_PROGRESS);
+ 	}
+ 
+ 	if (BP_IS_PROTECTED(bp)) {
+@@ -7023,11 +7023,11 @@ arc_write_done(zio_t *zio)
+ 				ASSERT0(BP_GET_LEVEL(zio->io_bp));
+ 			}
+ 		}
+-		arc_hdr_clear_flags(hdr, ARC_FLAG_IO_IN_PROGRESS);
+-		VERIFY3S(remove_reference(hdr, hdr), >, 0);
+ 		/* if it's not anon, we are doing a scrub */
+ 		if (exists == NULL && hdr->b_l1hdr.b_state == arc_anon)
+ 			arc_access(hdr, 0, B_FALSE);
++		arc_hdr_clear_flags(hdr, ARC_FLAG_IO_IN_PROGRESS);
++		VERIFY3S(remove_reference(hdr, hdr), >, 0);
+ 		mutex_exit(hash_lock);
+ 	} else {
+ 		arc_hdr_clear_flags(hdr, ARC_FLAG_IO_IN_PROGRESS);

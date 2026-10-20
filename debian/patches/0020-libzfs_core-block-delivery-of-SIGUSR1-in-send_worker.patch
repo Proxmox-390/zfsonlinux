@@ -1,0 +1,93 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Nico Sonack <nsonack@herrhotzenplotz.de>
+Date: Mon, 14 Sep 2026 18:36:11 +0000
+Subject: [PATCH] libzfs_core: block delivery of SIGUSR1 in send_worker thread
+
+This fixes a Linux-specific bug.
+
+3a909fe33 (libzfs, libzfs_core: send: always write to pipe, 2022-02-21)
+introduced a subtle bug where zfs send -RPv would not print status
+information periodically anymore when the stdout is redirected to
+something that isn't a pipe (e.g. >/dev/null).
+
+This is because the send_worker thread introduced by this commit
+is created with an unmodified signal mask from libzfs. When
+zfs_send_space is called it creates this thread.  When we request
+verbose status information another thread is created which, in
+theory, should periodically receive a SIGUSR1 via a POSIX timer.
+
+The main thread blocks USR1 delivery *after* the creation of the
+progress thread, leaving the send_worker thread's signal mask
+unmodified. The delivery of SIGUSR1 is now random and for at least
+Debian Trixie with kernel 6.12.107+deb13-amd64 this causes the
+send_worker to be favoured.
+
+Interestingly, when stracing the zfs send, sometimes delivery flaps
+over to the correct thread. Without tracing this doesn't happen and
+the output remains silent instead.
+
+Fix this by blocking delivery of SIGUSR1 in the send_worker thread.
+We don't need to take care of SIGINFO since this thread is only
+created on Linux and SIGINFO is a BSD-specific signal.
+
+Reviewed-by: Brian Behlendorf <behlendorf1@llnl.gov>
+Signed-off-by: Nico Sonack <nsonack@herrhotzenplotz.de>
+Closes #19098
+(cherry picked from commit 47906ec304216b91277a149d4a574ea7ce196575)
+Signed-off-by: Stoiko Ivanov <s.ivanov@proxmox.com>
+---
+ lib/libzfs_core/libzfs_core.c | 27 +++++++++++++++++++++++++--
+ 1 file changed, 25 insertions(+), 2 deletions(-)
+
+diff --git a/lib/libzfs_core/libzfs_core.c b/lib/libzfs_core/libzfs_core.c
+index 9347aa7c6a28dd3da5bd905689b21336b9972cb5..b0f59d04f8e1a0c192e9e088f1e4fcc355c63066 100644
+--- a/lib/libzfs_core/libzfs_core.c
++++ b/lib/libzfs_core/libzfs_core.c
+@@ -78,6 +78,7 @@
+ #include <libzfs_core.h>
+ #include <ctype.h>
+ #include <unistd.h>
++#include <signal.h>
+ #include <stdlib.h>
+ #include <string.h>
+ #ifdef ZFS_DEBUG
+@@ -699,7 +700,28 @@ send_worker(void *arg)
+ {
+ 	struct send_worker_ctx *ctx = arg;
+ 	unsigned int bufsiz = max_pipe_buffer(ctx->from);
+-	ssize_t rd;
++	sigset_t block_mask;
++	ssize_t rd = -1;
++
++	/*
++	 * When users request verbose status information about the
++	 * send progress SIGUSR1 is delivered periodically in libzfs
++	 * to a dedicated thread.
++	 *
++	 * However, we get created before this progress thread is
++	 * created and the signal mask of the parent is only modified to
++	 * block SIGUSR1 afterwards.
++	 *
++	 * Block delivery of USR1 to us such that we don't get
++	 * interrupted and the right thread gets the signal.
++	 */
++	sigemptyset(&block_mask);
++	sigaddset(&block_mask, SIGUSR1);
++	int err = pthread_sigmask(SIG_BLOCK, &block_mask, NULL);
++	if (err != 0) {
++		close(ctx->from);
++		return ((void *)(uintptr_t)err);
++	}
+ 
+ 	for (;;) {
+ 		rd = splice(ctx->from, NULL, ctx->to, NULL, bufsiz,
+@@ -707,7 +729,8 @@ send_worker(void *arg)
+ 		if ((rd == -1 && errno != EINTR) || rd == 0)
+ 			break;
+ 	}
+-	int err = (rd == -1) ? errno : 0;
++
++	err = (rd == -1) ? errno : 0;
+ 	close(ctx->from);
+ 	return ((void *)(uintptr_t)err);
+ }

@@ -12,3 +12,13 @@
 0012-Linux-use-cpu_feature_enabled-instead-of-static_cpu_.patch
 0013-Linux-7.3-inode_operations.create-dropped-flag-arg.patch
 0014-Linux-7.3-make-host-filesystem-available-to-kernel-t.patch
+0015-Inherit-the-project-ID-for-every-object-type.patch
+0016-Allow-renames-within-a-single-directory-under-projec.patch
+0017-ZTS-check-project-ID-inheritance-and-renames-within-.patch
+0018-arc-harness-buf_hdr-s-anon-state-invariant-checks.patch
+0019-rpm-Add-support-for-building-akmod-packages.patch
+0020-libzfs_core-block-delivery-of-SIGUSR1-in-send_worker.patch
+0021-kmodtool-use-kABI-baseline-naming-on-RHEL-to-prevent.patch
+0022-L2ARC-Reorder-header-destruction-for-in-flight-L2-wr.patch
+0023-L2ARC-Preserve-L2HDR-in-arc_release-for-in-flight-wr.patch
+0024-arc-fix-race-between-arc_release-and-arc_read_done.patch
