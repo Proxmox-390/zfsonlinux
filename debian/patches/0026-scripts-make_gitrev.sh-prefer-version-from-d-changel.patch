@@ -1,0 +1,46 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Stoiko Ivanov <s.ivanov@proxmox.com>
+Date: Thu, 29 Oct 2026 13:18:53 +0100
+Subject: [PATCH] scripts/make_gitrev.sh: prefer version from d/changelog
+
+make_gitrev.sh is called by make to create zfs_gitrev.h, which is
+used to identify the source-version of a build in the sysctl
+`kernel.spl.gitrev`. I noticed the discrepancy between kernel's
+build via `sbuild` (kernel.spl.gitrev = unknown) or directly
+(kernel.spl.gitrev looks like zfs-2.4.4-0-g71a9f95786).
+
+afaict the issue is purely cosmetic, and I ran into while comparing
+sysctl output of 2 kernels.
+
+make_gitrev.sh relies on having a .git for finding the information,
+which is available (as pointer to the submodule) in a checkout of
+pve-kernel, but not in the source-package used by sbuild.
+
+creating the file and commiting it to the source-package would be an
+alternative - but having the version from d/changelog conveys the
+same information for our released kernels.
+
+keeping the fallback to the git revision for direct builds which don't
+have debian/ copied inside.
+
+Signed-off-by: Stoiko Ivanov <s.ivanov@proxmox.com>
+---
+ scripts/make_gitrev.sh | 4 +++-
+ 1 file changed, 3 insertions(+), 1 deletion(-)
+
+diff --git a/scripts/make_gitrev.sh b/scripts/make_gitrev.sh
+index f85c9db097f0049bc83d06c988085b9f446df892..2b50cf4bcb9d414892fe958199a5032b563912ab 100755
+--- a/scripts/make_gitrev.sh
++++ b/scripts/make_gitrev.sh
+@@ -50,8 +50,10 @@ case "${GITREV}" in
+ 	*) ;;
+ esac
+ 
++# prefer the version from debian/changelog for our in-kernel builds
+ ZFS_GITREV=$({ cd "${top_srcdir}" &&
+-	git describe --always --long --dirty 2>/dev/null; } || :)
++	dpkg-parsechangelog -S Version 2>/dev/null ||
++	git describe --always --long --dirty 2>/dev/null;} ||:)
+ 
+ if [ -z "${ZFS_GITREV}" ]
+ then
