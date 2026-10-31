@@ -22,4 +22,3 @@
 0022-L2ARC-Reorder-header-destruction-for-in-flight-L2-wr.patch
 0023-L2ARC-Preserve-L2HDR-in-arc_release-for-in-flight-wr.patch
 0024-arc-fix-race-between-arc_release-and-arc_read_done.patch
-0025-Linux-drop-cached-pages-in-zfs_rezget.patch
