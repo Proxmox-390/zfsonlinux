@@ -4,6 +4,7 @@ Priority: optional
 Maintainer: Proxmox Support Team <support@proxmox.com>
 Build-Depends: debhelper-compat (= 13),
                dh-python,
+               dh-sequence-dkms,
                abigail-tools,
                libaio-dev,
                libblkid-dev,
@@ -180,6 +181,30 @@ Description: wrapper for libzfs_core C library (documentation)
  in which the error code is produced.
  .
  This package contains the documentation.
+
+Package: zfs-dkms
+Architecture: all
+Multi-Arch: foreign
+Depends: dkms (>> 2.1.1.2-5),
+         file,
+         libc6-dev | libc-dev,
+         lsb-release,
+         libpython3-stdlib,
+         ${misc:Depends},
+         ${perl:Depends}
+Recommends: zfs-zed, zfsutils-linux (>= ${source:Version}), ${linux:Recommends}
+# suggests debhelper because e.g. `dkms mkdeb -m zfs -v 0.8.2` needs dh_testdir (#909183)
+Suggests: debhelper
+Breaks: spl-dkms (<< 0.8.0~rc1), zfs-fuse (<< ${source:Version})
+Replaces: spl-dkms
+Provides: zfs-modules
+Description: OpenZFS filesystem kernel modules for Linux
+ OpenZFS is a storage platform that encompasses the functionality of
+ traditional filesystems and volume managers. It supports data checksums,
+ compression, encryption, snapshots, and more.
+ .
+ This DKMS package includes the SPA, DMU, ZVOL, and ZPL components of
+ OpenZFS.
 
 Package: zfs-initramfs
 Architecture: all
