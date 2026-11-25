@@ -1,3 +1,10 @@
+zfs-linux (2.4.4-pve1+s390x3) trixie; urgency=medium
+
+  * zfs-dkms: do not build for Proxmox kernels (kernel release ending in
+    -pve), which ship their own zfs module.
+
+ -- Yvan Janssens <yvanj@cyber.gent>  Wed, 25 Nov 2026 12:41:40 +0000
+
 zfs-linux (2.4.4-pve1+s390x2) trixie; urgency=medium
 
   * Rebuild with cleaned changelog and test data.

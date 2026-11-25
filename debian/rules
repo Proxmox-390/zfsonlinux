@@ -127,6 +127,13 @@ override_dh_auto_install:
 
 override_dh_dkms:
 	'$(CURDIR)/scripts/dkms.mkconf' -n $(NAME) -v $(DEB_VERSION_UPSTREAM) -f '$(CURDIR)/scripts/zfs-dkms.dkms'
+	@# Proxmox kernels (kernel release ending in -pve) ship their own zfs
+	@# module: DKMS must neither build one for them, which can fail for a
+	@# kernel newer than this OpenZFS release supports and then fails the
+	@# kernel installation, nor install one that would take precedence
+	@# over the module of the kernel package. The expression matches every
+	@# release that does not end in -pve.
+	echo 'BUILD_EXCLUSIVE_KERNEL="([^e]|[^v]e|[^p]ve|[^-]pve)$$"' >> '$(CURDIR)/scripts/zfs-dkms.dkms'
 	dh_dkms
 	rm -f '$(CURDIR)/scripts/zfs-dkms.dkms'
 
